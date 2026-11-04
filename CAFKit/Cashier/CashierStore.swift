@@ -74,6 +74,9 @@ final class CashierStore {
     /// Drive-Thru board (orders lanes, actions). Nothing starts until the cashier opens a Drive screen or the dashboard asks.
     let drive: DriveBoard
     private var heartbeatTask: Task<Void, Never>?
+    /// Shell hooks (push registration, realtime): the store knows nothing about them.
+    @ObservationIgnored var onSignedIn: (@MainActor () -> Void)?
+    @ObservationIgnored var beforeSignOut: (@MainActor () async -> Void)?
     private var attempt: (signature: String, idem: String)?
 
     init(token: String, session: CashierSession? = nil, book: BranchBook, queue: OfflineQueue?) {
@@ -148,10 +151,12 @@ final class CashierStore {
         book.upsert(rec, makeActive: true)
         refreshQueueCounts()
         Task { await flushQueue() }
+        onSignedIn?()
     }
 
     func logout() async {
         stopHeartbeat()
+        await beforeSignOut?()      // the push device is revoked while the session can still authorise it
         await session.logout()
         me = nil; heartbeat = nil; flow = .idle; recent = []
         phase = .pickStaff
