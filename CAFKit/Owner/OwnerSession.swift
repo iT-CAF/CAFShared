@@ -76,7 +76,7 @@ actor OwnerSession {
         do { return try JSONDecoder.api.decode(T.self, from: data) } catch { throw CashierError.malformed(status: 200) }
     }
 
-    func request(_ path: String, method: String, body: [String: Any]?, token: String?) throws -> URLRequest {
+    func request(_ path: String, method: String, body: [String: Any]?, token: String?, headers: [String: String] = [:], multipart: MultipartBody? = nil) throws -> URLRequest {
         var url = base.appendingPathComponent("api/app/v1")
         let pieces = path.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
         for part in pieces[0].split(separator: "/") { url.appendPathComponent(String(part)) }
@@ -90,7 +90,11 @@ actor OwnerSession {
             r.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             r.setValue(token, forHTTPHeaderField: "X-Caf-Token")        // some hosts strip Authorization before PHP; the server reads either
         }
-        if ["POST", "PUT", "PATCH"].contains(method) {
+        for (k, v) in headers { r.setValue(v, forHTTPHeaderField: k) }          // e.g. Idempotency-Key on creates
+        if let multipart {
+            r.setValue(multipart.contentType, forHTTPHeaderField: "Content-Type")      // file uploads (logos): the body is already encoded
+            r.httpBody = multipart.data
+        } else if ["POST", "PUT", "PATCH"].contains(method) {
             r.setValue("application/json", forHTTPHeaderField: "Content-Type")
             r.httpBody = try JSONSerialization.data(withJSONObject: body ?? [:])
         }
@@ -98,14 +102,14 @@ actor OwnerSession {
     }
 
     @discardableResult
-    func perform(_ path: String, method: String, body: [String: Any]?, auth: Bool, retried: Bool = false) async throws -> Data {
+    func perform(_ path: String, method: String, body: [String: Any]?, auth: Bool, headers: [String: String] = [:], multipart: MultipartBody? = nil, retried: Bool = false) async throws -> Data {
         var token: String?
         if auth {
             guard tokens != nil else { throw CashierError.api(.auth, "", status: 401) }
             if let t = tokens, t.accessExpiresAt.timeIntervalSince(now()) < 20 { try await refreshTokens() }       // proactive: no wasted 401
             token = tokens?.access
         }
-        let req = try request(path, method: method, body: body, token: token)
+        let req = try request(path, method: method, body: body, token: token, headers: headers, multipart: multipart)
         let data: Data, http: HTTPURLResponse
         do { (data, http) = try await transport.send(req) } catch is CancellationError { throw CancellationError() } catch { throw CashierError.offline }
         let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
@@ -114,7 +118,7 @@ actor OwnerSession {
         let err = CashierError.from(json: json, status: http.statusCode)
         if err.code == .auth, auth, !retried, tokens != nil {
             try await refreshTokens(after: token)
-            return try await perform(path, method: method, body: body, auth: auth, retried: true)
+            return try await perform(path, method: method, body: body, auth: auth, headers: headers, multipart: multipart, retried: true)
         }
         throw err
     }
