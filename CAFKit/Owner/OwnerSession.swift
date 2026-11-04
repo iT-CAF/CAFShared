@@ -31,7 +31,7 @@ actor OwnerSession {
     // MARK: sign in / out
 
     func login(email: String, password: String, deviceName: String) async throws -> OwnerMe {
-        let data = try await perform("auth/login", method: "POST", body: ["email": email, "password": password, "device_id": deviceId, "device_name": deviceName], auth: false)
+        let data = try await perform("auth/login", method: "POST", body: ["email": email, "password": password, "device_id": deviceId, "device_name": deviceName, "app": "owner"], auth: false)
         let r = try decode(OwnerAuthResponse.self, data)
         adopt(r.tokens)
         guard let me = r.me else { throw CashierError.malformed(status: 200) }
@@ -67,18 +67,20 @@ actor OwnerSession {
     func resetStaffPin(_ business: Int, staff: Int) async throws -> OwnerTeam { try decode(OwnerTeam.self, try await post("businesses/\(business)/staff/\(staff)/pin-reset", [:])) }
     func toggleStaff(_ business: Int, staff: Int) async throws -> OwnerTeam { try decode(OwnerTeam.self, try await post("businesses/\(business)/staff/\(staff)/toggle", [:])) }
 
-    // MARK: plumbing
+    // MARK: plumbing (internal: the `+Auth` / `+Push` extensions and the feature streams add endpoints in their own files)
 
-    private func get(_ path: String) async throws -> Data { try await perform(path, method: "GET", body: nil, auth: true) }
-    private func post(_ path: String, _ body: [String: Any]) async throws -> Data { try await perform(path, method: "POST", body: body, auth: true) }
+    func get(_ path: String) async throws -> Data { try await perform(path, method: "GET", body: nil, auth: true) }
+    func post(_ path: String, _ body: [String: Any]) async throws -> Data { try await perform(path, method: "POST", body: body, auth: true) }
 
-    private func decode<T: Decodable>(_ type: T.Type, _ data: Data) throws -> T {
+    func decode<T: Decodable>(_ type: T.Type, _ data: Data) throws -> T {
         do { return try JSONDecoder.api.decode(T.self, from: data) } catch { throw CashierError.malformed(status: 200) }
     }
 
-    private func request(_ path: String, method: String, body: [String: Any]?, token: String?) throws -> URLRequest {
+    func request(_ path: String, method: String, body: [String: Any]?, token: String?) throws -> URLRequest {
         var url = base.appendingPathComponent("api/app/v1")
-        for part in path.split(separator: "/") { url.appendPathComponent(String(part)) }
+        let pieces = path.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
+        for part in pieces[0].split(separator: "/") { url.appendPathComponent(String(part)) }
+        if pieces.count == 2, var c = URLComponents(url: url, resolvingAgainstBaseURL: false) { c.percentEncodedQuery = String(pieces[1]); url = c.url ?? url }   // "list?cursor=…&limit=20"
         var r = URLRequest(url: url)
         r.httpMethod = method
         r.httpShouldHandleCookies = false
@@ -88,7 +90,7 @@ actor OwnerSession {
             r.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
             r.setValue(token, forHTTPHeaderField: "X-Caf-Token")        // some hosts strip Authorization before PHP; the server reads either
         }
-        if method == "POST" {
+        if ["POST", "PUT", "PATCH"].contains(method) {
             r.setValue("application/json", forHTTPHeaderField: "Content-Type")
             r.httpBody = try JSONSerialization.data(withJSONObject: body ?? [:])
         }
@@ -96,7 +98,7 @@ actor OwnerSession {
     }
 
     @discardableResult
-    private func perform(_ path: String, method: String, body: [String: Any]?, auth: Bool, retried: Bool = false) async throws -> Data {
+    func perform(_ path: String, method: String, body: [String: Any]?, auth: Bool, retried: Bool = false) async throws -> Data {
         var token: String?
         if auth {
             guard tokens != nil else { throw CashierError.api(.auth, "", status: 401) }
@@ -142,7 +144,7 @@ actor OwnerSession {
         adopt(try decode(OwnerAuthResponse.self, data).tokens)
     }
 
-    private func adopt(_ t: OwnerAuthResponse.Tokens) {
+    func adopt(_ t: OwnerAuthResponse.Tokens) {
         let pair = OwnerTokenPair(access: t.access, refresh: t.refresh, accessExpiresAt: now().addingTimeInterval(TimeInterval(t.expiresIn)), refreshExpiresAt: now().addingTimeInterval(TimeInterval(t.refreshExpiresIn)))
         tokens = pair
         if let d = try? JSONEncoder().encode(pair) { secrets.write(d, account: Self.account) }

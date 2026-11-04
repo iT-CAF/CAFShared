@@ -48,7 +48,7 @@ final class OwnerStore {
         await loadAccount()
     }
 
-    private func loadAccount() async {
+    func loadAccount() async {
         do {
             let me = try await session.me()
             let list = try await session.businesses()
@@ -63,17 +63,29 @@ final class OwnerStore {
     func signIn(email: String, password: String) async {
         let e = email.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !e.isEmpty, !password.isEmpty else { loginError = L10n.string("owner.login_missing"); return }
+        let name = Self.deviceName
+        await signIn { try await $0.login(email: e, password: password, deviceName: name) }
+    }
+
+    /// Any sign-in method (password, Apple, Google, OAuth, WhatsApp code): `work` obtains the tokens from the server, then the account is loaded like on a normal launch.
+    @discardableResult
+    func signIn(using work: (OwnerSession) async throws -> OwnerMe) async -> Bool {
         isSigningIn = true; loginError = nil
         defer { isSigningIn = false }
         do {
             await session.setLanguage(L10n.language == .en ? "en" : "ar")
-            me = try await session.login(email: e, password: password, deviceName: Self.deviceName)
+            me = try await work(session)
             await loadAccount()
-            if phase != .ready { loginError = banner }
+            if phase != .ready { loginError = banner; return false }
+            return true
         } catch let err as CashierError {
             loginError = err.userMessage
         } catch { loginError = L10n.string("err.server") }
+        return false
     }
+
+    /// Shows a message under the sign-in form (cancelled browser sheets stay silent; other failures land here).
+    func reportSignInFailure(_ message: String) { loginError = message }
 
     func signOut() async {
         await session.logout()
