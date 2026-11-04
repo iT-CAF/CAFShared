@@ -49,14 +49,18 @@ struct OwnerAccountInfo: Decodable, Equatable, Sendable {
         me = (try? c.decode(Me.self, forKey: .me)) ?? Me()
         plan = (try? c.decode(Plan.self, forKey: .plan)) ?? Plan()
         showBilling = c.flexBool(.showBilling) ?? false
-        // The decoder's snake_case strategy also rewrites dictionary keys ("loyalty_members" → "loyaltyMembers"); rows are keyed back to the server's spelling.
-        if let u = try? c.nestedContainer(keyedBy: AnyKey.self, forKey: .usage) {
-            usage = u.allKeys.compactMap { k in (try? u.decode(OwnerMeter.self, forKey: k)).map { UsageRow(key: Self.snake(k.stringValue), meter: $0) } }
-                .sorted { Self.order($0.key) < Self.order($1.key) }
-        }
+        usage = Self.usageRows(in: c, forKey: .usage)
     }
     enum K: String, CodingKey { case me, plan, usage, showBilling }
     private struct AnyKey: CodingKey { var stringValue: String; var intValue: Int? { nil }; init?(stringValue: String) { self.stringValue = stringValue }; init?(intValue: Int) { nil } }
+
+    /// The `usage` object of `GET account` and `GET account/billing`. The decoder's snake_case strategy also rewrites dictionary keys ("loyalty_members" → "loyaltyMembers");
+    /// rows are keyed back to the server's spelling and ordered like the plan page.
+    static func usageRows<Key: CodingKey>(in c: KeyedDecodingContainer<Key>, forKey key: Key) -> [UsageRow] {
+        guard let u = try? c.nestedContainer(keyedBy: AnyKey.self, forKey: key) else { return [] }
+        return u.allKeys.compactMap { k in (try? u.decode(OwnerMeter.self, forKey: k)).map { UsageRow(key: snake(k.stringValue), meter: $0) } }
+            .sorted { order($0.key) < order($1.key) }
+    }
 
     static func snake(_ s: String) -> String {
         var out = ""
@@ -64,7 +68,7 @@ struct OwnerAccountInfo: Decodable, Equatable, Sendable {
         return out
     }
     private static let known = ["links", "bios", "qrs", "team", "loyalty_members", "whatsapp_messages"]
-    private static func order(_ key: String) -> Int { known.firstIndex(of: key) ?? known.count }
+    static func order(_ key: String) -> Int { known.firstIndex(of: key) ?? known.count }
 }
 
 /// One notification switch (`GET notifications/prefs` → `events`). The label is already in the language the session sent.
