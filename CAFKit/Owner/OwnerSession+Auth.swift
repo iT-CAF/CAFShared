@@ -114,14 +114,17 @@ extension OwnerSession {
     // MARK: OAuth through the server (X, Snapchat, Microsoft)
 
     /// The provider's authorisation page. The browser sheet ends on `<scheme>://auth?code=…` (or `?error=…`).
-    func oauthStart(_ provider: OwnerOAuthProvider) async throws -> URL {
-        let data = try await perform("auth/oauth/\(provider.rawValue)/start?device_id=\(deviceId)", method: "GET", body: nil, auth: false)
+    /// `codeChallenge` is the S256 challenge of a verifier the app keeps for `oauthFinish`: the custom URL scheme is not exclusive on iOS,
+    /// so the one-time code alone must be worthless to another app (the server refuses a start without it).
+    func oauthStart(_ provider: OwnerOAuthProvider, codeChallenge: String) async throws -> URL {
+        let challenge = codeChallenge.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? codeChallenge
+        let data = try await perform("auth/oauth/\(provider.rawValue)/start?device_id=\(deviceId)&code_challenge=\(challenge)", method: "GET", body: nil, auth: false)
         guard let url = URL(string: try decode(OwnerOAuthStart.self, data).url), url.scheme == "https" else { throw CashierError.malformed(status: 200) }
         return url
     }
 
-    func oauthFinish(code: String, deviceName: String) async throws -> OwnerMe {
-        let body: [String: Any] = ["code": code, "device_id": deviceId, "device_name": deviceName, "app": "owner"]
+    func oauthFinish(code: String, codeVerifier: String, deviceName: String) async throws -> OwnerMe {
+        let body: [String: Any] = ["code": code, "code_verifier": codeVerifier, "device_id": deviceId, "device_name": deviceName, "app": "owner"]
         return try await adoptSignIn(try await perform("auth/oauth/finish", method: "POST", body: body, auth: false))
     }
 
